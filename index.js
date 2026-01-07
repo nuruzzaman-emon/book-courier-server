@@ -56,6 +56,7 @@ async function run() {
     const booksCollection = db.collection("books");
     const ordersCollection = db.collection("orders");
     const paymentsCollection = db.collection("payments");
+    const mapDataCollection = db.collection("mapData");
 
     //verify admin
     const verifyAdmin = async (req, res, next) => {
@@ -119,14 +120,22 @@ async function run() {
 
     //book for user
     app.get("/all-books", async (req, res) => {
-      const { status } = req.query;
+      const { status, search, limit } = req.query;
       const query = {};
       if (status) {
         query.status = status;
       }
-      const limit = Number(req.query.limit);
+      if (search) {
+        query.$or = [
+          { bookName: { $regex: search, $options: "i" } },
+          { authorName: { $regex: search, $options: "i" } },
+        ];
+      }
 
-      const result = await booksCollection.find(query).limit(limit).toArray();
+      const result = await booksCollection
+        .find(query)
+        .limit(Number(limit))
+        .toArray();
       res.send(result);
     });
 
@@ -291,6 +300,12 @@ async function run() {
       const { email } = req.query;
       const query = { customerEmail: email };
       const result = await paymentsCollection.find(query).toArray();
+      res.send(result);
+    });
+
+    //for map
+    app.get("/coverage", async (req, res) => {
+      const result = await mapDataCollection.find().toArray();
       res.send(result);
     });
     // Send a ping to confirm a successful connection
