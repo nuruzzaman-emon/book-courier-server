@@ -1,10 +1,12 @@
+require("dotenv").config();
 const express = require("express");
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
+const stripe = require("stripe")(process.env.STRIPE_SECRET);
+
 const admin = require("firebase-admin");
 const cors = require("cors");
-require("dotenv").config();
 const app = express();
-const port = process.env.Port || 3000;
+const port = process.env.PORT || 3000;
 const serviceAccount = require("./book-courier-server-firebase-key.json");
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
@@ -18,18 +20,18 @@ app.use(cors());
 const verifyFBToken = async (req, res, next) => {
   const authorization = req.headers.authorization;
   if (!authorization) {
-    return res.status(401).send({ message: "Unauthorized Access" });
+    return res.status(401).send({ message: "Unauthorized Access1" });
   }
   const token = authorization.split(" ")[1];
   if (!token) {
-    return res.status(401).send({ message: "Unauthorized Access" });
+    return res.status(401).send({ message: "Unauthorized Access2" });
   }
   try {
     const decoded = await admin.auth().verifyIdToken(token);
     req.decoded_email = decoded.email;
     next();
   } catch (error) {
-    return res.status(401).send({ message: "Unauthorized Access" });
+    return res.status(401).send({ message: "Unauthorized Access3" });
   }
 };
 
@@ -52,6 +54,8 @@ async function run() {
     const db = client.db("book-courier-db");
     const usersCollection = db.collection("users");
     const booksCollection = db.collection("books");
+    const ordersCollection = db.collection("orders");
+    const paymentsCollection = db.collection("payments");
 
     //verify admin
     const verifyAdmin = async (req, res, next) => {
@@ -66,7 +70,7 @@ async function run() {
     const verifyLibrarian = async (req, res, next) => {
       const query = { email: req.decoded_email };
       const user = await usersCollection.findOne(query);
-      console.log(user);
+      // console.log(user);
       if (!user || user?.role !== "librarian") {
         return res.status(403).send({ message: "Forbidden Access" });
       }
@@ -74,6 +78,12 @@ async function run() {
     };
 
     //user related apis
+    app.get("/users", verifyFBToken, verifyAdmin, async (req, res) => {
+      const query = { role: req.query.role };
+      const result = await usersCollection.find(query).toArray();
+      res.send(result);
+    });
+
     app.post("/users", async (req, res) => {
       const user = req.body;
       const email = user.email;
@@ -86,6 +96,18 @@ async function run() {
       const result = await usersCollection.insertOne(user);
       res.send(result);
     });
+
+    app.patch("/users/:id", async (req, res) => {
+      const query = { _id: new ObjectId(req.params.id) };
+      const role = req.body;
+      const updateDoc = {
+        $set: role,
+      };
+      console.log(role, updateDoc);
+      const result = await usersCollection.updateOne(query, updateDoc);
+      res.send(result);
+    });
+
     app.get("/users/:email/role", async (req, res) => {
       const email = req.params.email;
       const query = { email };
@@ -95,6 +117,20 @@ async function run() {
 
     //book related apis
 
+    //book for user
+    app.get("/all-books", async (req, res) => {
+      const { status } = req.query;
+      const query = {};
+      if (status) {
+        query.status = status;
+      }
+      const limit = Number(req.query.limit);
+
+      const result = await booksCollection.find(query).limit(limit).toArray();
+      res.send(result);
+    });
+
+    //book for bookOwner
     app.get("/books", verifyFBToken, verifyLibrarian, async (req, res) => {
       const { email, status } = req.query;
       if (email !== req.decoded_email) {
@@ -111,7 +147,7 @@ async function run() {
       res.send(result);
     });
 
-    app.post("/books", verifyFBToken, async (req, res) => {
+    app.post("/books", verifyFBToken, verifyLibrarian, async (req, res) => {
       const book = req.body;
       book.createdAt = new Date();
       if (book.status === "published") {
@@ -120,12 +156,143 @@ async function run() {
       const result = await booksCollection.insertOne(book);
       res.send(result);
     });
-    app.get("/book-details/:id", async (req, res) => {
+    app.get("/book-details/:id", verifyFBToken, async (req, res) => {
       const query = { _id: new ObjectId(req.params.id) };
       const result = await booksCollection.findOne(query);
       res.send(result);
     });
+    app.patch("/books", async (req, res) => {
+      const { bookId, newStatus } = req.query;
+      const query = { _id: new ObjectId(bookId) };
+      const updateDoc = {
+        $set: {
+          status: newStatus,
+        },
+      };
+      const result = await booksCollection.updateOne(query, updateDoc);
+      res.send(result);
+    });
+    app.delete("/books/:id", async (req, res) => {
+      const { id } = req.params;
+      const query = { _id: new ObjectId(id) };
+      const result = await booksCollection.deleteOne(query);
+      res.send(result);
+    });
 
+    //orders related apis
+
+    app.get("/my-orders", verifyFBToken, async (req, res) => {
+      const query = { customerEmail: req.query.email };
+      const result = await ordersCollection.find(query).toArray();
+      res.send(result);
+    });
+    app.get("/orders", async (req, res) => {
+      const query = { bookAuthorEmail: req.query.email };
+      const result = await ordersCollection.find(query).toArray();
+      res.send(result);
+    });
+    app.patch("/orders/:id", async (req, res) => {
+      const query = { _id: new ObjectId(req.params.id) };
+      const status = req.body;
+      const updateDoc = {
+        $set: status,
+      };
+      const result = await ordersCollection.updateOne(query, updateDoc);
+      res.send(result);
+    });
+
+    app.post("/book-orders", verifyFBToken, async (req, res) => {
+      const orderInfo = req.body;
+      orderInfo.orderDate = new Date();
+      orderInfo.status = "pending";
+      orderInfo.paymentStatus = "unpaid";
+      const result = await ordersCollection.insertOne(orderInfo);
+      res.send(result);
+    });
+
+    app.patch("/book-orders/:id", verifyFBToken, async (req, res) => {
+      const query = { _id: new ObjectId(req.params.id) };
+      const updateDoc = {
+        $set: req.body,
+      };
+      const result = await ordersCollection.updateOne(query, updateDoc);
+      res.send(result);
+    });
+
+    //payment related APIs
+
+    app.post("/payment-checkout-sessions", verifyFBToken, async (req, res) => {
+      const paymentInfo = req.body;
+      const amount = parseInt(paymentInfo.price) * 100;
+      const session = await stripe.checkout.sessions.create({
+        line_items: [
+          {
+            // Provide the exact Price ID (for example, price_1234) of the product you want to sell
+            price_data: {
+              currency: "usd",
+              unit_amount: amount,
+              product_data: {
+                name: paymentInfo.bookName,
+              },
+            },
+            quantity: 1,
+          },
+        ],
+        customer_email: paymentInfo.customerEmail,
+        metadata: {
+          name: paymentInfo.bookName,
+          orderId: paymentInfo.orderId,
+        },
+        mode: "payment",
+        success_url: `${process.env.SITE_DOMAIN}/dashboard/payment-success?session_id={CHECKOUT_SESSION_ID}`,
+        cancel_url: `${process.env.SITE_DOMAIN}/dashboard/payment-cancelled`,
+      });
+      console.log(process.env.SITE_DOMAIN);
+      res.send({ url: session.url });
+    });
+
+    app.patch("/payment-success", verifyFBToken, async (req, res) => {
+      const sessionId = req.query.session_id;
+      const session = await stripe.checkout.sessions.retrieve(sessionId);
+      console.log(session);
+      const transectionId = session.payment_intent;
+      const query = {
+        transectionId,
+      };
+      const alreadyPaid = await paymentsCollection.findOne(query);
+      if (alreadyPaid) {
+        return res.send({ message: "Already Paid " });
+      }
+
+      if (session.payment_status === "paid") {
+        const query = { _id: new ObjectId(session.metadata.orderId) };
+        const updateDoc = {
+          $set: {
+            paymentStatus: "paid",
+          },
+        };
+        const result = await ordersCollection.updateOne(query, updateDoc);
+        const payment = {
+          amount: session.amount_total / 100,
+          currency: session.currency,
+          customerEmail: session.customer_email,
+          bookName: session.metadata.name,
+          orderId: session.metadata.orderId,
+          transectionId,
+          paidAt: new Date(),
+        };
+        await paymentsCollection.insertOne(payment);
+        return res.send(result);
+      }
+      res.send({ success: "false" });
+    });
+
+    app.get("/payments-history", verifyFBToken, async (req, res) => {
+      const { email } = req.query;
+      const query = { customerEmail: email };
+      const result = await paymentsCollection.find(query).toArray();
+      res.send(result);
+    });
     // Send a ping to confirm a successful connection
     await client.db("admin").command({ ping: 1 });
     console.log(
