@@ -117,7 +117,6 @@ async function run() {
     });
 
     //book related apis
-
     //book for user
     app.get("/all-books", async (req, res) => {
       const { status, search, limit } = req.query;
@@ -139,22 +138,51 @@ async function run() {
       res.send(result);
     });
 
+    //book for admin
+    app.get(
+      "/all-books-admin",
+      verifyFBToken,
+      verifyAdmin,
+      async (req, res) => {
+        const {  search, limit } = req.query;
+        const query = {};
+
+        if (search) {
+          query.$or = [
+            { bookName: { $regex: search, $options: "i" } },
+            { authorName: { $regex: search, $options: "i" } },
+          ];
+        }
+
+        const result = await booksCollection
+          .find(query)
+          .limit(Number(limit))
+          .toArray();
+        res.send(result);
+      }
+    );
+
     //book for bookOwner
-    app.get("/books", verifyFBToken, verifyLibrarian, async (req, res) => {
-      const { email, status } = req.query;
-      if (email !== req.decoded_email) {
-        return res.status(403).send({ message: "forbidden access" });
+    app.get(
+      "/books-library",
+      verifyFBToken,
+      verifyLibrarian,
+      async (req, res) => {
+        const { email, status } = req.query;
+        if (email !== req.decoded_email) {
+          return res.status(403).send({ message: "forbidden access" });
+        }
+        const query = {};
+        if (email) {
+          query.authorEmail = email;
+        }
+        if (status) {
+          query.status = status;
+        }
+        const result = await booksCollection.find(query).toArray();
+        res.send(result);
       }
-      const query = {};
-      if (email) {
-        query.authorEmail = email;
-      }
-      if (status) {
-        query.status = status;
-      }
-      const result = await booksCollection.find(query).toArray();
-      res.send(result);
-    });
+    );
 
     app.post("/books", verifyFBToken, verifyLibrarian, async (req, res) => {
       const book = req.body;
