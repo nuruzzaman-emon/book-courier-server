@@ -57,6 +57,7 @@ async function run() {
     const ordersCollection = db.collection("orders");
     const paymentsCollection = db.collection("payments");
     const mapDataCollection = db.collection("mapData");
+    const wishListCollection = db.collection("wishList");
 
     //verify admin
     const verifyAdmin = async (req, res, next) => {
@@ -133,6 +134,7 @@ async function run() {
 
       const result = await booksCollection
         .find(query)
+        .sort({ price: -1 })
         .limit(Number(limit))
         .toArray();
       res.send(result);
@@ -144,7 +146,7 @@ async function run() {
       verifyFBToken,
       verifyAdmin,
       async (req, res) => {
-        const {  search, limit } = req.query;
+        const { search, limit } = req.query;
         const query = {};
 
         if (search) {
@@ -334,6 +336,38 @@ async function run() {
     //for map
     app.get("/coverage", async (req, res) => {
       const result = await mapDataCollection.find().toArray();
+      res.send(result);
+    });
+
+    //for wishlist
+    app.post("/user-wishlist", verifyFBToken, async (req, res) => {
+      const book = req.body;
+      const userEmail = req.decoded_email;
+      const wishlistQuery = {
+        bookId: book.bookId,
+        userEmail,
+      };
+      const existingWishListItem = await wishListCollection.findOne(
+        wishlistQuery
+      );
+      if (existingWishListItem) {
+        return res.send({ message: "Already Added to Wishlist" });
+      }
+      book.seenAt = new Date();
+      const result = await wishListCollection.insertOne(book);
+      res.send(result);
+    });
+
+    app.get("/user-wishlist", verifyFBToken, async (req, res) => {
+      const { email } = req.query;
+      const query = { userEmail: email };
+      const result = await wishListCollection.find(query).toArray();
+      res.send(result);
+    });
+
+    app.delete("/user-wishlist/:id", async (req, res) => {
+      const query = { _id: new ObjectId(req.params.id) };
+      const result = await wishListCollection.deleteOne(query);
       res.send(result);
     });
     // Send a ping to confirm a successful connection
