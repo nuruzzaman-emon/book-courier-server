@@ -7,7 +7,14 @@ const admin = require("firebase-admin");
 const cors = require("cors");
 const app = express();
 const port = process.env.PORT || 3000;
-const serviceAccount = require("./book-courier-server-firebase-key.json");
+
+// const serviceAccount = require("./firebase-admin-key.json");
+
+const decoded = Buffer.from(process.env.FIREBASE_KEY_BASE64, "base64").toString(
+  "utf8"
+);
+const serviceAccount = JSON.parse(decoded);
+
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
 });
@@ -58,6 +65,7 @@ async function run() {
     const paymentsCollection = db.collection("payments");
     const mapDataCollection = db.collection("mapData");
     const wishListCollection = db.collection("wishList");
+    const reviewsCollection = db.collection("reviews");
 
     //verify admin
     const verifyAdmin = async (req, res, next) => {
@@ -105,7 +113,6 @@ async function run() {
       const updateDoc = {
         $set: role,
       };
-      console.log(role, updateDoc);
       const result = await usersCollection.updateOne(query, updateDoc);
       res.send(result);
     });
@@ -118,17 +125,18 @@ async function run() {
     });
 
     //book related apis
-    //book for user
+    //books for user
     app.get("/all-books", async (req, res) => {
-      const { status, search, limit } = req.query;
+      const { status, searchText, limit, skip } = req.query;
+      console.log(searchText);
       const query = {};
       if (status) {
         query.status = status;
       }
-      if (search) {
+      if (searchText) {
         query.$or = [
-          { bookName: { $regex: search, $options: "i" } },
-          { authorName: { $regex: search, $options: "i" } },
+          { bookName: { $regex: searchText, $options: "i" } },
+          { authorName: { $regex: searchText, $options: "i" } },
         ];
       }
 
@@ -136,8 +144,11 @@ async function run() {
         .find(query)
         .sort({ price: -1 })
         .limit(Number(limit))
+        .project({ bookName: 1, createdAt: 1, bookPhotoURL: 1, description: 1 })
+        .skip(Number(skip))
         .toArray();
-      res.send(result);
+      const count = await booksCollection.countDocuments();
+      res.send({ books: result, total: count });
     });
 
     //book for admin
@@ -159,6 +170,7 @@ async function run() {
         const result = await booksCollection
           .find(query)
           .limit(Number(limit))
+          .project({ bookName: 1, bookPhotoURL: 1 })
           .toArray();
         res.send(result);
       }
@@ -170,7 +182,7 @@ async function run() {
       verifyFBToken,
       verifyLibrarian,
       async (req, res) => {
-        const { email, status } = req.query;
+        const { email } = req.query;
         if (email !== req.decoded_email) {
           return res.status(403).send({ message: "forbidden access" });
         }
@@ -178,9 +190,7 @@ async function run() {
         if (email) {
           query.authorEmail = email;
         }
-        if (status) {
-          query.status = status;
-        }
+
         const result = await booksCollection.find(query).toArray();
         res.send(result);
       }
@@ -245,6 +255,7 @@ async function run() {
       orderInfo.orderDate = new Date();
       orderInfo.status = "pending";
       orderInfo.paymentStatus = "unpaid";
+      orderInfo.reviewStatus = false;
       const result = await ordersCollection.insertOne(orderInfo);
       res.send(result);
     });
@@ -286,14 +297,12 @@ async function run() {
         success_url: `${process.env.SITE_DOMAIN}/dashboard/payment-success?session_id={CHECKOUT_SESSION_ID}`,
         cancel_url: `${process.env.SITE_DOMAIN}/dashboard/payment-cancelled`,
       });
-      console.log(process.env.SITE_DOMAIN);
       res.send({ url: session.url });
     });
 
     app.patch("/payment-success", verifyFBToken, async (req, res) => {
       const sessionId = req.query.session_id;
       const session = await stripe.checkout.sessions.retrieve(sessionId);
-      console.log(session);
       const transectionId = session.payment_intent;
       const query = {
         transectionId,
@@ -370,11 +379,57 @@ async function run() {
       const result = await wishListCollection.deleteOne(query);
       res.send(result);
     });
-    // Send a ping to confirm a successful connection
-    await client.db("admin").command({ ping: 1 });
-    console.log(
-      "Pinged your deployment. You successfully connected to MongoDB!"
+
+    //REVIEW RELATED APIs
+    //for review permission
+    app.get(
+      "/book-review-permission/:bookId",
+      verifyFBToken,
+      async (req, res) => {
+        const { bookId } = req.params;
+        const email = req.decoded_email;
+        const query = {
+          bookId,
+          customerEmail: email,
+          paymentStatus: "paid",
+          reviewStatus: false,
+        };
+
+        const order = await ordersCollection.findOne(query);
+        res.send({ canReview: !!order });
+      }
     );
+
+    //get review
+    app.get("/book-review/:bookId", async (req, res) => {
+      const { bookId } = req.params;
+      const query = { bookId: bookId };
+      const result = await reviewsCollection.find(query).toArray();
+      res.send(result);
+    });
+
+    //post review
+    app.post("/book-review", async (req, res) => {
+      const reviewInfo = req.body;
+      reviewInfo.createdAt = new Date();
+      const result = await reviewsCollection.insertOne(reviewInfo);
+      await ordersCollection.updateOne(
+        {
+          bookId: reviewInfo.bookId,
+          customerEmail: reviewInfo.customerEmail,
+        },
+        {
+          $set: { reviewStatus: true },
+        }
+      );
+      res.send(result);
+    });
+
+    // Send a ping to confirm a successful connection
+    // await client.db("admin").command({ ping: 1 });
+    // console.log(
+    //   "Pinged your deployment. You successfully connected to MongoDB!"
+    // );
   } catch (error) {
     console.log(error);
   }
