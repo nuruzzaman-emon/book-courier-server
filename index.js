@@ -11,7 +11,7 @@ const port = process.env.PORT || 3000;
 // const serviceAccount = require("./firebase-admin-key.json");
 
 const decoded = Buffer.from(process.env.FIREBASE_KEY_BASE64, "base64").toString(
-  "utf8"
+  "utf8",
 );
 const serviceAccount = JSON.parse(decoded);
 
@@ -56,7 +56,7 @@ const client = new MongoClient(uri, {
 async function run() {
   try {
     // Connect the client to the server	(optional starting in v4.7)
-    await client.connect();
+    // await client.connect();
 
     const db = client.db("book-courier-db");
     const usersCollection = db.collection("users");
@@ -107,7 +107,7 @@ async function run() {
       res.send(result);
     });
 
-    app.patch("/users/:id", async (req, res) => {
+    app.patch("/users/:id", verifyFBToken, async (req, res) => {
       const query = { _id: new ObjectId(req.params.id) };
       const role = req.body;
       const updateDoc = {
@@ -125,6 +125,17 @@ async function run() {
     });
 
     //book related apis
+
+    // book for latest section
+    app.get("/latest-books", async (req, res) => {
+      const result = await booksCollection
+        .find()
+        .sort({ createdAt: -1 })
+        .project({ bookName: 1, bookPhotoURL: 1, description: 1, price: 1 })
+        .limit(8)
+        .toArray();
+      res.send(result);
+    });
     //books for user
     app.get("/all-books", async (req, res) => {
       const { status, searchText, limit, skip } = req.query;
@@ -142,41 +153,53 @@ async function run() {
 
       const result = await booksCollection
         .find(query)
-        .sort({ price: -1 })
-        .limit(Number(limit))
-        .project({ bookName: 1, createdAt: 1, bookPhotoURL: 1, description: 1 })
         .skip(Number(skip))
+        .limit(Number(limit))
+        .sort({ price: -1 })
+        .project({
+          bookName: 1,
+          createdAt: 1,
+          bookPhotoURL: 1,
+          description: 1,
+          price: 1,
+        })
         .toArray();
-      const count = await booksCollection.countDocuments();
+      const count = await booksCollection.countDocuments(query);
       res.send({ books: result, total: count });
     });
 
-    //book for admin
+    //books for admin
     app.get(
       "/all-books-admin",
       verifyFBToken,
       verifyAdmin,
       async (req, res) => {
-        const { search, limit } = req.query;
+        const { searchText, limit } = req.query;
         const query = {};
 
-        if (search) {
+        if (searchText) {
           query.$or = [
-            { bookName: { $regex: search, $options: "i" } },
-            { authorName: { $regex: search, $options: "i" } },
+            { bookName: { $regex: searchText, $options: "i" } },
+            { authorName: { $regex: searchText, $options: "i" } },
           ];
         }
 
         const result = await booksCollection
           .find(query)
           .limit(Number(limit))
-          .project({ bookName: 1, bookPhotoURL: 1 })
+          .project({
+            bookName: 1,
+            bookPhotoURL: 1,
+            status: 1,
+            createdAt: 1,
+            authorName: 1,
+          })
           .toArray();
         res.send(result);
-      }
+      },
     );
 
-    //book for bookOwner
+    //books for librarian
     app.get(
       "/books-library",
       verifyFBToken,
@@ -193,11 +216,22 @@ async function run() {
 
         const result = await booksCollection.find(query).toArray();
         res.send(result);
-      }
+      },
     );
 
     app.post("/books", verifyFBToken, verifyLibrarian, async (req, res) => {
-      const book = req.body;
+      const bookInfo = req.body;
+      const book = {
+        authorName: bookInfo.authorName,
+        authorEmail: bookInfo.authorEmail,
+        authorPhoneNumber: bookInfo.authorPhoneNumber,
+        bookName: bookInfo.bookName,
+        bookPhotoURL: bookInfo.bookPhotoURL,
+        address: bookInfo.address,
+        status: bookInfo.status,
+        price: Number(bookInfo.price),
+        description: bookInfo.description,
+      };
       book.createdAt = new Date();
       if (book.status === "published") {
         book.publishedAt = new Date();
@@ -205,12 +239,51 @@ async function run() {
       const result = await booksCollection.insertOne(book);
       res.send(result);
     });
+    //book details for user
     app.get("/book-details/:id", verifyFBToken, async (req, res) => {
       const query = { _id: new ObjectId(req.params.id) };
       const result = await booksCollection.findOne(query);
       res.send(result);
     });
-    app.patch("/books", async (req, res) => {
+
+    //book details for librarian
+    app.get(
+      "/selected-book/:id",
+      verifyFBToken,
+      verifyLibrarian,
+      async (req, res) => {
+        const query = { _id: new ObjectId(req.params.id) };
+        const result = await booksCollection.findOne(query);
+        res.send(result);
+      },
+    );
+    app.patch(
+      "/book-details/:id",
+      verifyFBToken,
+      verifyLibrarian,
+      async (req, res) => {
+        const { id } = req.params;
+        const query = { _id: new ObjectId(id) };
+        const updateInfo = req.body;
+        const updatedBook = {
+          authorName: updateInfo.authorName,
+          authorEmail: updateInfo.authorEmail,
+          authorPhoneNumber: updateInfo.authorPhoneNumber,
+          bookName: updateInfo.bookName,
+          bookPhotoURL: updateInfo.bookPhotoURL,
+          address: updateInfo.address,
+          status: updateInfo.status,
+          price: Number(updateInfo.price),
+          description: updateInfo.description,
+        };
+        const updateDoc = {
+          $set: updatedBook,
+        };
+        const result = await booksCollection.updateOne(query, updateDoc);
+        res.send(result);
+      },
+    );
+    app.patch("/books", verifyFBToken, verifyAdmin, async (req, res) => {
       const { bookId, newStatus } = req.query;
       const query = { _id: new ObjectId(bookId) };
       const updateDoc = {
@@ -221,7 +294,7 @@ async function run() {
       const result = await booksCollection.updateOne(query, updateDoc);
       res.send(result);
     });
-    app.delete("/books/:id", async (req, res) => {
+    app.delete("/books/:id", verifyFBToken, verifyAdmin, async (req, res) => {
       const { id } = req.params;
       const query = { _id: new ObjectId(id) };
       const result = await booksCollection.deleteOne(query);
@@ -235,20 +308,28 @@ async function run() {
       const result = await ordersCollection.find(query).toArray();
       res.send(result);
     });
-    app.get("/orders", async (req, res) => {
+    app.get("/orders", verifyFBToken, verifyLibrarian, async (req, res) => {
       const query = { bookAuthorEmail: req.query.email };
-      const result = await ordersCollection.find(query).toArray();
+      const result = await ordersCollection
+        .find(query)
+        .project({ bookName: 1, customerName: 1, status: 1 })
+        .toArray();
       res.send(result);
     });
-    app.patch("/orders/:id", async (req, res) => {
-      const query = { _id: new ObjectId(req.params.id) };
-      const status = req.body;
-      const updateDoc = {
-        $set: status,
-      };
-      const result = await ordersCollection.updateOne(query, updateDoc);
-      res.send(result);
-    });
+    app.patch(
+      "/orders/:id",
+      verifyFBToken,
+      verifyLibrarian,
+      async (req, res) => {
+        const query = { _id: new ObjectId(req.params.id) };
+        const status = req.body;
+        const updateDoc = {
+          $set: status,
+        };
+        const result = await ordersCollection.updateOne(query, updateDoc);
+        res.send(result);
+      },
+    );
 
     app.post("/book-orders", verifyFBToken, async (req, res) => {
       const orderInfo = req.body;
@@ -332,7 +413,7 @@ async function run() {
         await paymentsCollection.insertOne(payment);
         return res.send(result);
       }
-      res.send({ success: "false" });
+      res.send({ success: false });
     });
 
     app.get("/payments-history", verifyFBToken, async (req, res) => {
@@ -348,6 +429,17 @@ async function run() {
       res.send(result);
     });
 
+    //for count statics
+    app.get("/all-data-count", async (req, res) => {
+      const users = await usersCollection.countDocuments();
+      const books = await booksCollection.countDocuments();
+      const orders = await ordersCollection.countDocuments();
+      const payments = await paymentsCollection.countDocuments();
+      const reviews = await reviewsCollection.countDocuments();
+      const wishlist = await wishListCollection.countDocuments();
+      res.send({ users, books, orders, payments, reviews, wishlist });
+    });
+
     //for wishlist
     app.post("/user-wishlist", verifyFBToken, async (req, res) => {
       const book = req.body;
@@ -356,9 +448,8 @@ async function run() {
         bookId: book.bookId,
         userEmail,
       };
-      const existingWishListItem = await wishListCollection.findOne(
-        wishlistQuery
-      );
+      const existingWishListItem =
+        await wishListCollection.findOne(wishlistQuery);
       if (existingWishListItem) {
         return res.send({ message: "Already Added to Wishlist" });
       }
@@ -397,7 +488,7 @@ async function run() {
 
         const order = await ordersCollection.findOne(query);
         res.send({ canReview: !!order });
-      }
+      },
     );
 
     //get review
@@ -420,7 +511,7 @@ async function run() {
         },
         {
           $set: { reviewStatus: true },
-        }
+        },
       );
       res.send(result);
     });
