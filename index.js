@@ -442,20 +442,28 @@ async function run() {
 
     //for wishlist
     app.post("/user-wishlist", verifyFBToken, async (req, res) => {
-      const book = req.body;
+      const { bookId, bookName, price, bookPhotoURL } = req.body;
       const userEmail = req.decoded_email;
+      console.log("email:",userEmail);
       const wishlistQuery = {
-        bookId: book.bookId,
+        bookId,
         userEmail,
       };
-      const existingWishListItem =
-        await wishListCollection.findOne(wishlistQuery);
-      if (existingWishListItem) {
-        return res.send({ message: "Already Added to Wishlist" });
+      const exists = await wishListCollection.findOne(wishlistQuery);
+
+      if (exists) {
+        return res.status(409).send({ message: "Already Added to Wishlist" });
       }
-      book.seenAt = new Date();
-      const result = await wishListCollection.insertOne(book);
-      res.send(result);
+      const wishlistItem = {
+        bookId,
+        bookName,
+        price,
+        bookPhotoURL,
+        userEmail,
+        seenAt: new Date(),
+      };
+      const result = await wishListCollection.insertOne(wishlistItem);
+      res.status(201).send(result);
     });
 
     app.get("/user-wishlist", verifyFBToken, async (req, res) => {
